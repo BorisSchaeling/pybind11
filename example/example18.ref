@@ -1,0 +1,6 @@
+virtual parent1
+nonvirtual parent1
+virtual parent2
+nonvirtual parent2
+child1
+override

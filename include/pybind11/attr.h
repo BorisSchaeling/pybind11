@@ -61,6 +61,9 @@ struct sibling { handle value; sibling(const handle &value) : value(value.ptr())
 /// Annotation indicating that a class derives from another given type
 template <typename T> struct base { };
 
+/// Annotation indicating that a class derives from other given types
+template <typename... T> struct bases { };
+
 /// Keep patient alive while nurse lives
 template <int Nurse, int Patient> struct keep_alive { };
 
@@ -161,10 +164,7 @@ struct type_record {
     /// Function pointer to class_<..>::dealloc
     void (*dealloc)(PyObject *) = nullptr;
 
-    // Pointer to RTTI type_info data structure of base class
-    const std::type_info *base_type = nullptr;
-
-    /// OR: Python handle to base class
+    /// Python handle to base class(es)
     handle base_handle;
 
     /// Optional docstring
@@ -182,7 +182,7 @@ template <typename T, typename SFINAE = void> struct process_attribute;
 template <typename T> struct process_attribute_default {
     /// Default implementation: do nothing
     static void init(const T &, function_record *) { }
-    static void init(const T &, type_record *) { }
+    template <class type> static void init(const T &, type_record *) { }
     static void precall(handle) { }
     static void postcall(handle, handle) { }
 };
@@ -200,7 +200,7 @@ template <> struct process_attribute<doc> : process_attribute_default<doc> {
 /// Process an attribute specifying the function's docstring (provided as a C-style string)
 template <> struct process_attribute<const char *> : process_attribute_default<const char *> {
     static void init(const char *d, function_record *r) { r->doc = const_cast<char *>(d); }
-    static void init(const char *d, type_record *r) { r->doc = const_cast<char *>(d); }
+    template <class type> static void init(const char *d, type_record *r) { r->doc = const_cast<char *>(d); }
 };
 template <> struct process_attribute<char *> : process_attribute<const char *> { };
 
@@ -273,13 +273,19 @@ struct process_attribute<arg_t<T>> : process_attribute_default<arg_t<T>> {
 /// Process a parent class attribute
 template <typename T>
 struct process_attribute<T, typename std::enable_if<std::is_base_of<handle, T>::value>::type> : process_attribute_default<handle> {
-    static void init(const handle &h, type_record *r) { r->base_handle = h; }
+    template <class type> static void init(const handle &h, type_record *r) { r->base_handle = h; }
 };
 
 /// Process a parent class attribute
 template <typename T>
 struct process_attribute<base<T>> : process_attribute_default<base<T>> {
-    static void init(const base<T> &, type_record *r) { r->base_type = &typeid(T); }
+    template <class type> static void init(const base<T> &, type_record *r) { r->base_handle = detail::get_type_handle(typeid(T)); }
+};
+
+/// Process a parent classes attribute
+template <typename... T>
+struct process_attribute<bases<T...>> : process_attribute_default<bases<T...>> {
+    template <class type> static void init(const bases<T...> &, type_record *r) { r->base_handle = pybind11::make_tuple(detail::register_cast<type, T>()...).release(); }
 };
 
 /***
@@ -307,8 +313,9 @@ template <typename... Args> struct process_attributes {
         int unused[] = { 0, (process_attribute<typename std::decay<Args>::type>::init(args, r), 0) ... };
         ignore_unused(unused);
     }
+    template <class type>
     static void init(const Args&... args, type_record *r) {
-        int unused[] = { 0, (process_attribute<typename std::decay<Args>::type>::init(args, r), 0) ... };
+        int unused[] = { 0, (process_attribute<typename std::decay<Args>::type>::template init<type>(args, r), 0) ... };
         ignore_unused(unused);
     }
     static void precall(handle fn_args) {

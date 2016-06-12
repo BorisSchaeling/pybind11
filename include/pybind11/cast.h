@@ -15,6 +15,9 @@
 #include "descr.h"
 #include <array>
 #include <limits>
+#include <utility>
+#include <functional>
+#include <typeindex>
 #include <iostream>
 
 NAMESPACE_BEGIN(pybind11)
@@ -53,7 +56,7 @@ PYBIND11_NOINLINE inline internals &get_internals() {
     return *internals_ptr;
 }
 
-PYBIND11_NOINLINE inline detail::type_info* get_type_info(PyTypeObject *type, bool throw_if_missing = true) {
+PYBIND11_NOINLINE inline detail::type_info* get_type_info(const PyTypeObject *type, bool throw_if_missing = true) {
     auto const &type_dict = get_internals().registered_types_py;
     do {
         auto it = type_dict.find(type);
@@ -118,6 +121,44 @@ inline PyThreadState *get_thread_state_unchecked() {
 #endif
 }
 
+template <typename Self, typename Base> handle register_cast() {
+    type_info *self = get_type_info(typeid(Self));
+    if (!self) {
+        self = new detail::type_info();
+        get_internals().registered_types_cpp[std::type_index(typeid(Self))] = self;
+    }
+
+    type_info *base = get_type_info(typeid(Base));
+    if (!base)
+        pybind11_fail("base type \"" + std::string(std::type_index(typeid(Base)).name()) +
+                      "\" is not registered!");
+
+    auto &registered_casts = get_internals().registered_casts;
+    bool ok = registered_casts.emplace(std::make_pair(self, base), [](void *ptr){ return (Base *)(Self *)ptr; }).second;
+    if (!ok)
+        pybind11_fail("cast from \"" + std::string(std::type_index(typeid(Self)).name()) + "\" to \"" +
+                      std::string(std::type_index(typeid(Base)).name()) + "\" is already registered!");
+
+    return get_type_handle(typeid(Base));
+}
+
+PYBIND11_NOINLINE inline const std::function<void*(void*)> *get_cast(const detail::type_info *self, const detail::type_info *base) {
+    auto const &cast_dict = get_internals().registered_casts;
+    auto it = cast_dict.find(std::make_pair((void *)self, (void *)base));
+    if (it != cast_dict.end())
+        return &it->second;
+    return nullptr;
+}
+
+PYBIND11_NOINLINE inline void *cast_to_base_type(handle src, const PyTypeObject *type) {
+    auto self = get_type_info(Py_TYPE(src.ptr()));
+    auto base = get_type_info(type);
+    auto cast_ptr = get_cast(self, base);
+    if (cast_ptr)
+        return (*cast_ptr)(((instance<void> *) src.ptr())->value);
+    return ((instance<void> *) src.ptr())->value;
+}
+
 class type_caster_generic {
 public:
     PYBIND11_NOINLINE type_caster_generic(const std::type_info &type_info)
@@ -130,7 +171,10 @@ public:
             value = nullptr;
             return true;
         } else if (PyType_IsSubtype(Py_TYPE(src.ptr()), typeinfo->type)) {
-            value = ((instance<void> *) src.ptr())->value;
+            if (Py_TYPE(src.ptr()) == typeinfo->type)
+                value = ((instance<void> *) src.ptr())->value;
+            else
+                value = cast_to_base_type(src, typeinfo->type);
             return true;
         }
         if (convert) {

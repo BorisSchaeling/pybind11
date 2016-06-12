@@ -73,6 +73,8 @@
 #include <unordered_map>
 #include <memory>
 #include <typeindex>
+#include <utility>
+#include <functional>
 
 #if PY_MAJOR_VERSION >= 3 /// Compatibility macros for various Python versions
 #define PYBIND11_INSTANCE_METHOD_NEW(ptr, class_) PyInstanceMethod_New(ptr)
@@ -249,6 +251,12 @@ template <typename type, typename holder_type = std::unique_ptr<type>> struct in
 };
 
 struct overload_hash {
+    inline std::size_t operator()(const std::pair<void*, void*>& v) const {
+        size_t value = std::hash<void*>()(v.first);
+        value ^= std::hash<void*>()(v.second) + 0x9e3779b9 + (value<<6) + (value>>2);
+        return value;
+    }
+
     inline std::size_t operator()(const std::pair<const PyObject *, const char *>& v) const {
         size_t value = std::hash<const void *>()(v.first);
         value ^= std::hash<const void *>()(v.second)  + 0x9e3779b9 + (value<<6) + (value>>2);
@@ -261,6 +269,7 @@ struct internals {
     std::unordered_map<std::type_index, void*> registered_types_cpp; // std::type_index -> type_info
     std::unordered_map<const void *, void*> registered_types_py;     // PyTypeObject* -> type_info
     std::unordered_map<const void *, void*> registered_instances;    // void * -> PyObject*
+    std::unordered_map<std::pair<void*, void*>, std::function<void*(void*)>, overload_hash> registered_casts;
     std::unordered_set<std::pair<const PyObject *, const char *>, overload_hash> inactive_overload_cache;
 #if defined(WITH_THREAD)
     decltype(PyThread_create_key()) tstate = 0; // Usually an int but a long on Cygwin64 with Python 3.x

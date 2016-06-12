@@ -505,26 +505,6 @@ public:
     PYBIND11_OBJECT_DEFAULT(generic_type, object, PyType_Check)
 protected:
     void initialize(type_record *rec) {
-        if (rec->base_type) {
-            if (rec->base_handle)
-                pybind11_fail("generic_type: specified base type multiple times!");
-            rec->base_handle = detail::get_type_handle(*(rec->base_type));
-            if (!rec->base_handle) {
-                std::string tname(rec->base_type->name());
-                detail::clean_type_id(tname);
-                pybind11_fail("generic_type: type \"" + std::string(rec->name) +
-                              "\" referenced unknown base type \"" + tname + "\"");
-            }
-        }
-
-        auto &internals = get_internals();
-        auto tindex = std::type_index(*(rec->type));
-
-        if (internals.registered_types_cpp.find(tindex) !=
-            internals.registered_types_cpp.end())
-            pybind11_fail("generic_type: type \"" + std::string(rec->name) +
-                          "\" is already registered!");
-
         object type_holder(PyType_Type.tp_alloc(&PyType_Type, 0), false);
         object name(PYBIND11_FROM_STRING(rec->name), false);
         auto type = (PyHeapTypeObject*) type_holder.ptr();
@@ -533,12 +513,15 @@ protected:
             pybind11_fail("generic_type: unable to create type object!");
 
         /* Register supplemental type information in C++ dict */
-        detail::type_info *tinfo = new detail::type_info();
+        detail::type_info *tinfo = get_type_info(*(rec->type));
+        if (!tinfo) {
+            tinfo = new detail::type_info();
+            get_internals().registered_types_cpp[std::type_index(*(rec->type))] = tinfo;
+        }
         tinfo->type = (PyTypeObject *) type;
         tinfo->type_size = rec->type_size;
         tinfo->init_holder = rec->init_holder;
-        internals.registered_types_cpp[tindex] = tinfo;
-        internals.registered_types_py[type] = tinfo;
+        get_internals().registered_types_py[type] = tinfo;
 
         object scope_module;
         if (rec->scope) {
@@ -552,8 +535,16 @@ protected:
         /* Basic type attributes */
         type->ht_type.tp_name = strdup(full_name.c_str());
         type->ht_type.tp_basicsize = (ssize_t) rec->instance_size;
-        type->ht_type.tp_base = (PyTypeObject *) rec->base_handle.ptr();
-        rec->base_handle.inc_ref();
+        if (rec->base_handle) {
+            tuple t(object(rec->base_handle, false));
+            if (t.check()) {
+                type->ht_type.tp_base = (PyTypeObject *) ((object) t[0]).ptr();
+                type->ht_type.tp_bases = rec->base_handle.ptr();
+            } else {
+                type->ht_type.tp_base = (PyTypeObject *) rec->base_handle.ptr();
+            }
+            rec->base_handle.inc_ref();
+        }
 
 #if PY_MAJOR_VERSION >= 3 && PY_MINOR_VERSION >= 3
         /* Qualified names for Python >= 3.3 */
@@ -734,6 +725,10 @@ public:
 
     template <typename... Extra>
     class_(handle scope, const char *name, const Extra &... extra) {
+        if (detail::get_type_info(typeid(type)))
+            pybind11_fail("generic_type: type \"" + std::string(name) +
+                          "\" is already registered!");
+
         detail::type_record record;
         record.scope = scope;
         record.name = name;
@@ -744,7 +739,7 @@ public:
         record.dealloc = dealloc;
 
         /* Process optional arguments, if any */
-        detail::process_attributes<Extra...>::init(extra..., &record);
+        detail::process_attributes<Extra...>::template init<type>(extra..., &record);
 
         detail::generic_type::initialize(&record);
 
