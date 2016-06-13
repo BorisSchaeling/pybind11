@@ -536,7 +536,7 @@ protected:
         type->ht_type.tp_name = strdup(full_name.c_str());
         type->ht_type.tp_basicsize = (ssize_t) rec->instance_size;
         if (rec->base_handle) {
-            tuple t(object(rec->base_handle, false));
+            tuple t(rec->base_handle, true);
             if (t.check()) {
                 type->ht_type.tp_base = (PyTypeObject *) ((object) t[0]).ptr();
                 type->ht_type.tp_bases = rec->base_handle.ptr();
