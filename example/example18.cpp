@@ -9,55 +9,67 @@
 
 #include "example.h"
 
-struct MIParent1 {
-    virtual ~MIParent1() = default;
-
-    virtual void virtualParent1() {
-        std::cout << "virtual parent1\n";
-    }
-
-    void nonvirtualParent1() {
-        std::cout << "nonvirtual parent1\n";
-    }
-
-    virtual void virtualOverride() {
-    }
+struct MIClassA {
+    virtual ~MIClassA() = default;
+    virtual void funcA() { std::cout << "funcA\n"; }
 };
 
-struct MIParent2 {
-    virtual ~MIParent2() = default;
-
-    virtual void virtualParent2() {
-        std::cout << "virtual parent2\n";
-    }
-
-    void nonvirtualParent2() {
-        std::cout << "nonvirtual parent2\n";
-    }
+struct MIClassB {
+    virtual ~MIClassB() = default;
+    virtual void funcB() { std::cout << "funcB\n"; }
 };
 
-struct MIChild1 : MIParent1, MIParent2 {
-    void child1() {
-        std::cout << "child1\n";
-    }
+struct MIClassC {
+    virtual ~MIClassC() = default;
+    virtual void funcC() { std::cout << "funcC\n"; }
+};
 
-    void virtualOverride() override {
-        std::cout << "override\n";
-    }
+struct MIClassD {
+    virtual ~MIClassD() = default;
+    virtual void funcD() { std::cout << "funcD\n"; }
+};
+
+struct MIClassAB : MIClassA, MIClassB {
+    virtual ~MIClassAB() = default;
+    virtual void funcAB() { std::cout << "funcAB\n"; }
+};
+
+struct MIClassCD : MIClassC, MIClassD {
+    virtual ~MIClassCD() = default;
+    virtual void funcCD() { std::cout << "funcCD\n"; }
+};
+
+struct MIClassABCD : MIClassAB, MIClassCD {
+    virtual ~MIClassABCD() = default;
+    virtual void funcABCD() { std::cout << "funcABCD\n"; }
 };
 
 void init_ex18(py::module &m) {
-    py::class_<MIParent1>(m, "MIParent1")
-        .def("virtualParent1", &MIParent1::virtualParent1)
-        .def("nonvirtualParent1", &MIParent1::nonvirtualParent1)
-        .def("virtualOverride", &MIParent1::virtualOverride);
-
-    py::class_<MIParent2>(m, "MIParent2")
-        .def("virtualParent2", &MIParent2::virtualParent2)
-        .def("nonvirtualParent2", &MIParent2::nonvirtualParent2);
-
-    py::class_<MIChild1>(m, "MIChild1", py::bases<MIParent1, MIParent2>())
+    py::class_<MIClassA>(m, "MIClassA")
         .def(py::init<>())
-        .def("child1", &MIChild1::child1)
-        .def("virtualOverride", &MIChild1::virtualOverride);
+        .def("funcA", &MIClassA::funcA);
+
+    py::class_<MIClassB>(m, "MIClassB")
+        .def(py::init<>())
+        .def("funcB", &MIClassB::funcB);
+
+    py::class_<MIClassC>(m, "MIClassC")
+        .def(py::init<>())
+        .def("funcC", &MIClassC::funcC);
+
+    py::class_<MIClassD>(m, "MIClassD")
+        .def(py::init<>())
+        .def("funcD", &MIClassD::funcD);
+
+    py::class_<MIClassAB>(m, "MIClassAB", py::bases<MIClassA, MIClassB>())
+        .def(py::init<>())
+        .def("funcAB", &MIClassAB::funcAB);
+
+    py::class_<MIClassCD>(m, "MIClassCD", py::bases<MIClassC, MIClassD>())
+        .def(py::init<>())
+        .def("funcCD", &MIClassCD::funcCD);
+
+    py::class_<MIClassABCD>(m, "MIClassABCD", py::bases<MIClassAB, MIClassCD>())
+        .def(py::init<>())
+        .def("funcABCD", &MIClassABCD::funcABCD);
 }

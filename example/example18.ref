@@ -1,6 +1,17 @@
-virtual parent1
-nonvirtual parent1
-virtual parent2
-nonvirtual parent2
-child1
-override
+funcA
+funcB
+funcC
+funcD
+funcA
+funcB
+funcAB
+funcC
+funcD
+funcCD
+funcA
+funcB
+funcAB
+funcC
+funcD
+funcCD
+funcABCD
