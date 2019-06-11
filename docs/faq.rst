@@ -4,44 +4,42 @@ Frequently asked questions
 "ImportError: dynamic module does not define init function"
 ===========================================================
 
-1. Make sure that the name specified in ``pybind::module`` and
-   ``PYBIND11_PLUGIN`` is consistent and identical to the filename of the
-   extension library. The latter should not contain any extra prefixes (e.g.
-   ``test.so`` instead of ``libtest.so``).
+1. Make sure that the name specified in PYBIND11_MODULE is identical to the
+filename of the extension library (without prefixes such as .so)
 
-2. If the above did not fix your issue, then you are likely using an
-   incompatible version of Python (for instance, the extension library was
-   compiled against Python 2, while the interpreter is running on top of some
-   version of Python 3, or vice versa)
+2. If the above did not fix the issue, you are likely using an incompatible
+version of Python (for instance, the extension library was compiled against
+Python 2, while the interpreter is running on top of some version of Python
+3, or vice versa).
 
 "Symbol not found: ``__Py_ZeroStruct`` / ``_PyInstanceMethod_Type``"
 ========================================================================
 
-See item 2 of the first answer.
+See the first answer.
+
+"SystemError: dynamic module not initialized properly"
+======================================================
+
+See the first answer.
 
 The Python interpreter immediately crashes when importing my module
 ===================================================================
 
-See item 2 of the first answer.
+See the first answer.
 
-CMake doesn't detect the right Python version, or it finds mismatched interpreter and library versions
-======================================================================================================
+CMake doesn't detect the right Python version
+=============================================
 
-The Python detection logic of CMake is flawed and can sometimes fail to find
-the desired Python version, or it chooses mismatched interpreter and library
-versions. A longer discussion is available on the pybind11 issue tracker
-[#f1]_, though this is ultimately not a pybind11 issue.
-
-To force the build system to choose a particular version, delete CMakeCache.txt
-and then invoke CMake as follows:
+The CMake-based build system will try to automatically detect the installed
+version of Python and link against that. When this fails, or when there are
+multiple versions of Python and it finds the wrong one, delete
+``CMakeCache.txt`` and then invoke CMake as follows:
 
 .. code-block:: bash
 
-    cmake -DPYTHON_EXECUTABLE:FILEPATH=<...> \
-          -DPYTHON_LIBRARY:FILEPATH=<...>  \
-          -DPYTHON_INCLUDE_DIR:PATH=<...> .
+    cmake -DPYTHON_EXECUTABLE:FILEPATH=<path-to-python-executable> .
 
-.. [#f1] http://github.com/pybind/pybind11/issues/99
+.. _faq_reference_arguments:
 
 Limitations involving reference arguments
 =========================================
@@ -95,8 +93,10 @@ and the binding code
 How can I reduce the build time?
 ================================
 
-It's good practice to split binding code over multiple files, as is done in
-the included file :file:`example/example.cpp`.
+It's good practice to split binding code over multiple files, as in the
+following example:
+
+:file:`example.cpp`:
 
 .. code-block:: cpp
 
@@ -104,27 +104,88 @@ the included file :file:`example/example.cpp`.
     void init_ex2(py::module &);
     /* ... */
 
-    PYBIND11_PLUGIN(example) {
-        py::module m("example", "pybind example plugin");
-
+    PYBIND11_MODULE(example, m) {
         init_ex1(m);
         init_ex2(m);
-
         /* ... */
-
-        return m.ptr();
     }
 
-The various ``init_ex`` functions should be contained in separate files that
-can be compiled independently from another. Following this approach will
+:file:`ex1.cpp`:
+
+.. code-block:: cpp
+
+    void init_ex1(py::module &m) {
+        m.def("add", [](int a, int b) { return a + b; });
+    }
+
+:file:`ex2.cpp`:
+
+.. code-block:: cpp
+
+    void init_ex2(py::module &m) {
+        m.def("sub", [](int a, int b) { return a - b; });
+    }
+
+:command:`python`:
+
+.. code-block:: pycon
+
+    >>> import example
+    >>> example.add(1, 2)
+    3
+    >>> example.sub(1, 1)
+    0
+
+As shown above, the various ``init_ex`` functions should be contained in
+separate files that can be compiled independently from one another, and then
+linked together into the same final shared object.  Following this approach
+will:
 
 1. reduce memory requirements per compilation unit.
 
 2. enable parallel builds (if desired).
 
 3. allow for faster incremental builds. For instance, when a single class
-   definiton is changed, only a subset of the binding code will generally need
+   definition is changed, only a subset of the binding code will generally need
    to be recompiled.
+
+"recursive template instantiation exceeded maximum depth of 256"
+================================================================
+
+If you receive an error about excessive recursive template evaluation, try
+specifying a larger value, e.g. ``-ftemplate-depth=1024`` on GCC/Clang. The
+culprit is generally the generation of function signatures at compile time
+using C++14 template metaprogramming.
+
+.. _`faq:hidden_visibility`:
+
+"‘SomeClass’ declared with greater visibility than the type of its field ‘SomeClass::member’ [-Wattributes]"
+============================================================================================================
+
+This error typically indicates that you are compiling without the required
+``-fvisibility`` flag.  pybind11 code internally forces hidden visibility on
+all internal code, but if non-hidden (and thus *exported*) code attempts to
+include a pybind type (for example, ``py::object`` or ``py::list``) you can run
+into this warning.
+
+To avoid it, make sure you are specifying ``-fvisibility=hidden`` when
+compiling pybind code.
+
+As to why ``-fvisibility=hidden`` is necessary, because pybind modules could
+have been compiled under different versions of pybind itself, it is also
+important that the symbols defined in one module do not clash with the
+potentially-incompatible symbols defined in another.  While Python extension
+modules are usually loaded with localized symbols (under POSIX systems
+typically using ``dlopen`` with the ``RTLD_LOCAL`` flag), this Python default
+can be changed, but even if it isn't it is not always enough to guarantee
+complete independence of the symbols involved when not using
+``-fvisibility=hidden``.
+
+Additionally, ``-fvisiblity=hidden`` can deliver considerably binary size
+savings.  (See the following section for more details).
+
+
+.. _`faq:symhidden`:
 
 How can I create smaller binaries?
 ==================================
@@ -133,7 +194,7 @@ To do its job, pybind11 extensively relies on a programming technique known as
 *template metaprogramming*, which is a way of performing computation at compile
 time using type information. Template metaprogamming usually instantiates code
 involving significant numbers of deeply nested types that are either completely
-removed or reduced to just a few instrutions during the compiler's optimization
+removed or reduced to just a few instructions during the compiler's optimization
 phase. However, due to the nested nature of these types, the resulting symbol
 names in the compiled extension library can be extremely long. For instance,
 the included test suite contains the following symbol:
@@ -142,7 +203,7 @@ the included test suite contains the following symbol:
 
     .. code-block:: none
 
-        _​_​Z​N​8​p​y​b​i​n​d​1​1​1​2​c​p​p​_​f​u​n​c​t​i​o​n​C​1​I​v​8​E​x​a​m​p​l​e​2​J​R​N​S​t​3​_​_​1​6​v​e​c​t​o​r​I​N​S​3​_​1​2​b​a​s​i​c​_​s​t​r​i​n​g​I​w​N​S​3​_​1​1​c​h​a​r​_​t​r​a​i​t​s​I​w​E​E​N​S​3​_​9​a​l​l​o​c​a​t​o​r​I​w​E​E​E​E​N​S​8​_​I​S​A​_​E​E​E​E​E​J​N​S​_​4​n​a​m​e​E​N​S​_​7​s​i​b​l​i​n​g​E​N​S​_​9​i​s​_​m​e​t​h​o​d​E​A​2​8​_​c​E​E​E​M​T​0​_​F​T​_​D​p​T​1​_​E​D​p​R​K​T​2​_​
+        _​_​Z​N​8​p​y​b​i​n​d​1​1​1​2​c​p​p​_​f​u​n​c​t​i​o​n​C​1​I​v​8​E​x​a​m​p​l​e​2​J​R​N​S​t​3​_​_​1​6​v​e​c​t​o​r​I​N​S​3​_​1​2​b​a​s​i​c​_​s​t​r​i​n​g​I​w​N​S​3​_​1​1​c​h​a​r​_​t​r​a​i​t​s​I​w​E​E​N​S​3​_​9​a​l​l​o​c​a​t​o​r​I​w​E​E​E​E​N​S​8​_​I​S​A​_​E​E​E​E​E​J​N​S​_​4​n​a​m​e​E​N​S​_​7​s​i​b​l​i​n​g​E​N​S​_​9​i​s​_​m​e​t​h​o​d​E​A​2​8​_​c​E​E​E​M​T​0​_​F​T​_​D​p​T​1​_​E​D​p​R​K​T​2​_
 
 .. only:: not html
 
@@ -164,52 +225,73 @@ world. So we'll generally only want to export symbols for those functions which
 are actually called from the outside.
 
 This can be achieved by specifying the parameter ``-fvisibility=hidden`` to GCC
-and Clang, which sets the default symbol visibility to *hidden*. It's best to
-do this only for release builds, since the symbol names can be helpful in
-debugging sessions. On Visual Studio, symbols are already hidden by default, so
-nothing needs to be done there. Needless to say, this has a tremendous impact
-on the final binary size of the resulting extension library.
+and Clang, which sets the default symbol visibility to *hidden*, which has a
+tremendous impact on the final binary size of the resulting extension library.
+(On Visual Studio, symbols are already hidden by default, so nothing needs to
+be done there.)
 
-Another aspect that can require a fair bit of code are function signature
-descriptions. pybind11 automatically generates human-readable function
-signatures for docstrings, e.g.:
+In addition to decreasing binary size, ``-fvisibility=hidden`` also avoids
+potential serious issues when loading multiple modules and is required for
+proper pybind operation.  See the previous FAQ entry for more details.
 
-.. code-block:: none
-
-     |  __init__(...)
-     |      __init__(*args, **kwargs)
-     |      Overloaded function.
-     |
-     |      1. __init__(example.Example1) -> NoneType
-     |
-     |      Docstring for overload #1 goes here
-     |
-     |      2. __init__(example.Example1, int) -> NoneType
-     |
-     |      Docstring for overload #2 goes here
-     |
-     |      3. __init__(example.Example1, example.Example1) -> NoneType
-     |
-     |      Docstring for overload #3 goes here
-
-
-In C++11 mode, these are generated at run time using string concatenation,
-which can amount to 10-20% of the size of the resulting binary. If you can,
-enable C++14 language features (using ``-std=c++14`` for GCC/Clang), in which
-case signatures are efficiently pre-generated at compile time. Unfortunately,
-Visual Studio's C++14 support (``constexpr``) is not good enough as of April
-2016, so it always uses the more expensive run-time approach.
-
-Working with ancient Visual Studio 2009 builds on Windows
+Working with ancient Visual Studio 2008 builds on Windows
 =========================================================
 
 The official Windows distributions of Python are compiled using truly
 ancient versions of Visual Studio that lack good C++11 support. Some users
 implicitly assume that it would be impossible to load a plugin built with
 Visual Studio 2015 into a Python distribution that was compiled using Visual
-Studio 2009. However, no such issue exists: it's perfectly legitimate to
+Studio 2008. However, no such issue exists: it's perfectly legitimate to
 interface DLLs that are built with different compilers and/or C libraries.
 Common gotchas to watch out for involve not ``free()``-ing memory region
 that that were ``malloc()``-ed in another shared library, using data
 structures with incompatible ABIs, and so on. pybind11 is very careful not
 to make these types of mistakes.
+
+Inconsistent detection of Python version in CMake and pybind11
+==============================================================
+
+The functions ``find_package(PythonInterp)`` and ``find_package(PythonLibs)`` provided by CMake
+for Python version detection are not used by pybind11 due to unreliability and limitations that make
+them unsuitable for pybind11's needs. Instead pybind provides its own, more reliable Python detection
+CMake code. Conflicts can arise, however, when using pybind11 in a project that *also* uses the CMake
+Python detection in a system with several Python versions installed.
+
+This difference may cause inconsistencies and errors if *both* mechanisms are used in the same project. Consider the following
+Cmake code executed in a system with Python 2.7 and 3.x installed:
+
+.. code-block:: cmake
+
+    find_package(PythonInterp)
+    find_package(PythonLibs)
+    find_package(pybind11)
+
+It will detect Python 2.7 and pybind11 will pick it as well.
+
+In contrast this code:
+
+.. code-block:: cmake
+
+    find_package(pybind11)
+    find_package(PythonInterp)
+    find_package(PythonLibs)
+
+will detect Python 3.x for pybind11 and may crash on ``find_package(PythonLibs)`` afterwards.
+
+It is advised to avoid using ``find_package(PythonInterp)`` and ``find_package(PythonLibs)`` from CMake and rely
+on pybind11 in detecting Python version. If this is not possible CMake machinery should be called *before* including pybind11.
+
+How to cite this project?
+=========================
+
+We suggest the following BibTeX template to cite pybind11 in scientific
+discourse:
+
+.. code-block:: bash
+
+    @misc{pybind11,
+       author = {Wenzel Jakob and Jason Rhinelander and Dean Moldovan},
+       year = {2017},
+       note = {https://github.com/pybind/pybind11},
+       title = {pybind11 -- Seamless operability between C++11 and Python}
+    }

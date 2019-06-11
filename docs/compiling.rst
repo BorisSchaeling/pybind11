@@ -1,3 +1,5 @@
+.. _compiling:
+
 Build systems
 #############
 
@@ -7,17 +9,17 @@ Building with setuptools
 For projects on PyPI, building with setuptools is the way to go. Sylvain Corlay
 has kindly provided an example project which shows how to set up everything,
 including automatic generation of documentation using Sphinx. Please refer to
-the [pbtest]_ repository.
+the [python_example]_ repository.
 
-.. [pbtest] https://github.com/pybind/pbtest
+.. [python_example] https://github.com/pybind/python_example
 
 Building with cppimport
 ========================
 
- cppimport is a small Python import hook that determines whether there is a C++
- source file whose name matches the requested module. If there is, the file is
- compiled as a Python extension using pybind11 and placed in the same folder as
- the C++ source file. Python is then able to find the module and load it.
+[cppimport]_ is a small Python import hook that determines whether there is a C++
+source file whose name matches the requested module. If there is, the file is
+compiled as a Python extension using pybind11 and placed in the same folder as
+the C++ source file. Python is then able to find the module and load it.
 
 .. [cppimport] https://github.com/tbenthompson/cppimport
 
@@ -26,146 +28,262 @@ Building with cppimport
 Building with CMake
 ===================
 
-For C++ codebases that already have an existing CMake-based build system, the
-following snippet should be a good starting point to create bindings across
-platforms. It assumes that the code is located in a file named
-:file:`example.cpp`, and that the pybind11 repository is located in a
-subdirectory named :file:`pybind11`.
+For C++ codebases that have an existing CMake-based build system, a Python
+extension module can be created with just a few lines of code:
 
 .. code-block:: cmake
 
-    cmake_minimum_required(VERSION 2.8)
-
+    cmake_minimum_required(VERSION 2.8.12)
     project(example)
 
-    # Add a CMake parameter for choosing a desired Python version
-    set(EXAMPLE_PYTHON_VERSION "" CACHE STRING
-        "Python version to use for compiling the example library")
+    add_subdirectory(pybind11)
+    pybind11_add_module(example example.cpp)
 
-    include(CheckCXXCompilerFlag)
+This assumes that the pybind11 repository is located in a subdirectory named
+:file:`pybind11` and that the code is located in a file named :file:`example.cpp`.
+The CMake command ``add_subdirectory`` will import the pybind11 project which
+provides the ``pybind11_add_module`` function. It will take care of all the
+details needed to build a Python extension module on any platform.
 
-    # Set a default build configuration if none is specified.
-    # 'MinSizeRel' produces the smallest binaries
-    if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-      message(STATUS "Setting build type to 'MinSizeRel' as none was specified.")
-      set(CMAKE_BUILD_TYPE MinSizeRel CACHE STRING "Choose the type of build." FORCE)
-      set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS "Debug" "Release"
-        "MinSizeRel" "RelWithDebInfo")
-    endif()
-    string(TOUPPER "${CMAKE_BUILD_TYPE}" U_CMAKE_BUILD_TYPE)
+A working sample project, including a way to invoke CMake from :file:`setup.py` for
+PyPI integration, can be found in the [cmake_example]_  repository.
 
-    # Try to autodetect Python (can be overridden manually if needed)
-    set(Python_ADDITIONAL_VERSIONS 3.4 3.5 3.6 3.7)
-    if (NOT ${EXAMPLE_PYTHON_VERSION} STREQUAL "")
-      find_package(PythonLibs ${EXAMPLE_PYTHON_VERSION} EXACT)
-      if (NOT PYTHONLIBS_FOUND)
-        find_package(PythonLibs ${EXAMPLE_PYTHON_VERSION} REQUIRED)
-      endif()
-    else()
-      find_package(PythonLibs REQUIRED)
-    endif()
+.. [cmake_example] https://github.com/pybind/cmake_example
 
-    # The above sometimes returns version numbers like "3.4.3+";
-    # the "+" must be removed for the next lines to work
-    string(REPLACE "+" "" PYTHONLIBS_VERSION_STRING "+${PYTHONLIBS_VERSION_STRING}")
+pybind11_add_module
+-------------------
 
-    # Uncomment the following line if you will also require a matching Python interpreter
-    # find_package(PythonInterp ${PYTHONLIBS_VERSION_STRING} EXACT REQUIRED)
+To ease the creation of Python extension modules, pybind11 provides a CMake
+function with the following signature:
 
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
-      CHECK_CXX_COMPILER_FLAG("-std=c++14" HAS_CPP14_FLAG)
-      CHECK_CXX_COMPILER_FLAG("-std=c++11" HAS_CPP11_FLAG)
+.. code-block:: cmake
 
-      if (HAS_CPP14_FLAG)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++14")
-      elseif (HAS_CPP11_FLAG)
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -std=c++11")
-      else()
-        message(FATAL_ERROR "Unsupported compiler -- at least C++11 support is needed!")
-      endif()
+    pybind11_add_module(<name> [MODULE | SHARED] [EXCLUDE_FROM_ALL]
+                        [NO_EXTRAS] [SYSTEM] [THIN_LTO] source1 [source2 ...])
 
-      # Enable link time optimization and set the default symbol
-      # visibility to hidden (very important to obtain small binaries)
-      if (NOT ${U_CMAKE_BUILD_TYPE} MATCHES DEBUG)
-        # Default symbol visibility
-        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
+This function behaves very much like CMake's builtin ``add_library`` (in fact,
+it's a wrapper function around that command). It will add a library target
+called ``<name>`` to be built from the listed source files. In addition, it
+will take care of all the Python-specific compiler and linker flags as well
+as the OS- and Python-version-specific file extension. The produced target
+``<name>`` can be further manipulated with regular CMake commands.
 
-        # Check for Link Time Optimization support
-        CHECK_CXX_COMPILER_FLAG("-flto" HAS_LTO_FLAG)
-        if (HAS_LTO_FLAG)
-          set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto")
-        endif()
-      endif()
-    endif()
+``MODULE`` or ``SHARED`` may be given to specify the type of library. If no
+type is given, ``MODULE`` is used by default which ensures the creation of a
+Python-exclusive module. Specifying ``SHARED`` will create a more traditional
+dynamic library which can also be linked from elsewhere. ``EXCLUDE_FROM_ALL``
+removes this target from the default build (see CMake docs for details).
 
-    # Include path for Python header files
-    include_directories(${PYTHON_INCLUDE_DIR})
+Since pybind11 is a template library, ``pybind11_add_module`` adds compiler
+flags to ensure high quality code generation without bloat arising from long
+symbol names and duplication of code in different translation units. It
+sets default visibility to *hidden*, which is required for some pybind11
+features and functionality when attempting to load multiple pybind11 modules
+compiled under different pybind11 versions.  It also adds additional flags
+enabling LTO (Link Time Optimization) and strip unneeded symbols. See the
+:ref:`FAQ entry <faq:symhidden>` for a more detailed explanation. These
+latter optimizations are never applied in ``Debug`` mode.  If ``NO_EXTRAS`` is
+given, they will always be disabled, even in ``Release`` mode. However, this
+will result in code bloat and is generally not recommended.
 
-    # Include path for pybind11 header files -- this may need to be
-    # changed depending on your setup
-    include_directories(${PROJECT_SOURCE_DIR}/pybind11/include)
+By default, pybind11 and Python headers will be included with ``-I``. In order
+to include pybind11 as system library, e.g. to avoid warnings in downstream
+code with warn-levels outside of pybind11's scope, set the option ``SYSTEM``.
 
-    # Create the binding library
-    add_library(example SHARED
-      example.cpp
-      # ... extra files go here ...
-    )
+As stated above, LTO is enabled by default. Some newer compilers also support
+different flavors of LTO such as `ThinLTO`_. Setting ``THIN_LTO`` will cause
+the function to prefer this flavor if available. The function falls back to
+regular LTO if ``-flto=thin`` is not available.
 
-    # Don't add a 'lib' prefix to the shared library
-    set_target_properties(example PROPERTIES PREFIX "")
+.. _ThinLTO: http://clang.llvm.org/docs/ThinLTO.html
 
-    if (WIN32)
-      if (MSVC)
-        # /MP enables multithreaded builds (relevant when there are many files), /bigobj is
-        # needed for bigger binding projects due to the limit to 64k addressable sections
-        set_property(TARGET example APPEND PROPERTY COMPILE_OPTIONS /MP /bigobj)
-        # Enforce size-based optimization and link time code generation on MSVC
-        # (~30% smaller binaries in experiments); do nothing in debug mode.
-        set_property(TARGET example APPEND PROPERTY COMPILE_OPTIONS
-          "$<$<CONFIG:Release>:/Os>" "$<$<CONFIG:Release>:/GL>"
-          "$<$<CONFIG:MinSizeRel>:/Os>" "$<$<CONFIG:MinSizeRel>:/GL>"
-          "$<$<CONFIG:RelWithDebInfo>:/Os>" "$<$<CONFIG:RelWithDebInfo>:/GL>"
-        )
-        set_property(TARGET example APPEND_STRING PROPERTY LINK_FLAGS_RELEASE "/LTCG ")
-        set_property(TARGET example APPEND_STRING PROPERTY LINK_FLAGS_MINSIZEREL "/LTCG ")
-        set_property(TARGET example APPEND_STRING PROPERTY LINK_FLAGS_RELWITHDEBINFO "/LTCG ")
-      endif()
+Configuration variables
+-----------------------
 
-      # .PYD file extension on Windows
-      set_target_properties(example PROPERTIES SUFFIX ".pyd")
+By default, pybind11 will compile modules with the C++14 standard, if available
+on the target compiler, falling back to C++11 if C++14 support is not
+available.  Note, however, that this default is subject to change: future
+pybind11 releases are expected to migrate to newer C++ standards as they become
+available.  To override this, the standard flag can be given explicitly in
+``PYBIND11_CPP_STANDARD``:
 
-      # Link against the Python shared library
-      target_link_libraries(example ${PYTHON_LIBRARY})
-    elseif (UNIX)
-      # It's quite common to have multiple copies of the same Python version
-      # installed on one's system. E.g.: one copy from the OS and another copy
-      # that's statically linked into an application like Blender or Maya.
-      # If we link our plugin library against the OS Python here and import it
-      # into Blender or Maya later on, this will cause segfaults when multiple
-      # conflicting Python instances are active at the same time (even when they
-      # are of the same version).
+.. code-block:: cmake
 
-      # Windows is not affected by this issue since it handles DLL imports
-      # differently. The solution for Linux and Mac OS is simple: we just don't
-      # link against the Python library. The resulting shared library will have
-      # missing symbols, but that's perfectly fine -- they will be resolved at
-      # import time.
+    # Use just one of these:
+    # GCC/clang:
+    set(PYBIND11_CPP_STANDARD -std=c++11)
+    set(PYBIND11_CPP_STANDARD -std=c++14)
+    set(PYBIND11_CPP_STANDARD -std=c++1z) # Experimental C++17 support
+    # MSVC:
+    set(PYBIND11_CPP_STANDARD /std:c++14)
+    set(PYBIND11_CPP_STANDARD /std:c++latest) # Enables some MSVC C++17 features
 
-      # .SO file extension on Linux/Mac OS
-      set_target_properties(example PROPERTIES SUFFIX ".so")
+    add_subdirectory(pybind11)  # or find_package(pybind11)
 
-      # Strip unnecessary sections of the binary on Linux/Mac OS
-      if(APPLE)
-        set_target_properties(example PROPERTIES MACOSX_RPATH ".")
-        set_target_properties(example PROPERTIES LINK_FLAGS "-undefined dynamic_lookup ")
-        if (NOT ${U_CMAKE_BUILD_TYPE} MATCHES DEBUG)
-          add_custom_command(TARGET example POST_BUILD
-                             COMMAND strip -u -r ${PROJECT_BINARY_DIR}/example.so)
-        endif()
-      else()
-        if (NOT ${U_CMAKE_BUILD_TYPE} MATCHES DEBUG)
-          add_custom_command(TARGET example POST_BUILD
-                             COMMAND strip ${PROJECT_BINARY_DIR}/example.so)
-        endif()
-      endif()
-    endif()
+Note that this and all other configuration variables must be set **before** the
+call to ``add_subdirectory`` or ``find_package``. The variables can also be set
+when calling CMake from the command line using the ``-D<variable>=<value>`` flag.
+
+The target Python version can be selected by setting ``PYBIND11_PYTHON_VERSION``
+or an exact Python installation can be specified with ``PYTHON_EXECUTABLE``.
+For example:
+
+.. code-block:: bash
+
+    cmake -DPYBIND11_PYTHON_VERSION=3.6 ..
+    # or
+    cmake -DPYTHON_EXECUTABLE=path/to/python ..
+
+find_package vs. add_subdirectory
+---------------------------------
+
+For CMake-based projects that don't include the pybind11 repository internally,
+an external installation can be detected through ``find_package(pybind11)``.
+See the `Config file`_ docstring for details of relevant CMake variables.
+
+.. code-block:: cmake
+
+    cmake_minimum_required(VERSION 2.8.12)
+    project(example)
+
+    find_package(pybind11 REQUIRED)
+    pybind11_add_module(example example.cpp)
+
+Note that ``find_package(pybind11)`` will only work correctly if pybind11
+has been correctly installed on the system, e. g. after downloading or cloning
+the pybind11 repository  :
+
+.. code-block:: bash
+
+    cd pybind11
+    mkdir build
+    cd build
+    cmake ..
+    make install
+
+Once detected, the aforementioned ``pybind11_add_module`` can be employed as
+before. The function usage and configuration variables are identical no matter
+if pybind11 is added as a subdirectory or found as an installed package. You
+can refer to the same [cmake_example]_ repository for a full sample project
+-- just swap out ``add_subdirectory`` for ``find_package``.
+
+.. _Config file: https://github.com/pybind/pybind11/blob/master/tools/pybind11Config.cmake.in
+
+Advanced: interface library target
+----------------------------------
+
+When using a version of CMake greater than 3.0, pybind11 can additionally
+be used as a special *interface library* . The target ``pybind11::module``
+is available with pybind11 headers, Python headers and libraries as needed,
+and C++ compile definitions attached. This target is suitable for linking
+to an independently constructed (through ``add_library``, not
+``pybind11_add_module``) target in the consuming project.
+
+.. code-block:: cmake
+
+    cmake_minimum_required(VERSION 3.0)
+    project(example)
+
+    find_package(pybind11 REQUIRED)  # or add_subdirectory(pybind11)
+
+    add_library(example MODULE main.cpp)
+    target_link_libraries(example PRIVATE pybind11::module)
+    set_target_properties(example PROPERTIES PREFIX "${PYTHON_MODULE_PREFIX}"
+                                             SUFFIX "${PYTHON_MODULE_EXTENSION}")
+
+.. warning::
+
+    Since pybind11 is a metatemplate library, it is crucial that certain
+    compiler flags are provided to ensure high quality code generation. In
+    contrast to the ``pybind11_add_module()`` command, the CMake interface
+    library only provides the *minimal* set of parameters to ensure that the
+    code using pybind11 compiles, but it does **not** pass these extra compiler
+    flags (i.e. this is up to you).
+
+    These include Link Time Optimization (``-flto`` on GCC/Clang/ICPC, ``/GL``
+    and ``/LTCG`` on Visual Studio) and .OBJ files with many sections on Visual
+    Studio (``/bigobj``).  The :ref:`FAQ <faq:symhidden>` contains an
+    explanation on why these are needed.
+
+Embedding the Python interpreter
+--------------------------------
+
+In addition to extension modules, pybind11 also supports embedding Python into
+a C++ executable or library. In CMake, simply link with the ``pybind11::embed``
+target. It provides everything needed to get the interpreter running. The Python
+headers and libraries are attached to the target. Unlike ``pybind11::module``,
+there is no need to manually set any additional properties here. For more
+information about usage in C++, see :doc:`/advanced/embedding`.
+
+.. code-block:: cmake
+
+    cmake_minimum_required(VERSION 3.0)
+    project(example)
+
+    find_package(pybind11 REQUIRED)  # or add_subdirectory(pybind11)
+
+    add_executable(example main.cpp)
+    target_link_libraries(example PRIVATE pybind11::embed)
+
+.. _building_manually:
+
+Building manually
+=================
+
+pybind11 is a header-only library, hence it is not necessary to link against
+any special libraries and there are no intermediate (magic) translation steps.
+
+On Linux, you can compile an example such as the one given in
+:ref:`simple_example` using the following command:
+
+.. code-block:: bash
+
+    $ c++ -O3 -Wall -shared -std=c++11 -fPIC `python3 -m pybind11 --includes` example.cpp -o example`python3-config --extension-suffix`
+
+The flags given here assume that you're using Python 3. For Python 2, just
+change the executable appropriately (to ``python`` or ``python2``).
+
+The ``python3 -m pybind11 --includes`` command fetches the include paths for
+both pybind11 and Python headers. This assumes that pybind11 has been installed
+using ``pip`` or ``conda``. If it hasn't, you can also manually specify
+``-I <path-to-pybind11>/include`` together with the Python includes path
+``python3-config --includes``.
+
+Note that Python 2.7 modules don't use a special suffix, so you should simply
+use ``example.so`` instead of ``example`python3-config --extension-suffix```.
+Besides, the ``--extension-suffix`` option may or may not be available, depending
+on the distribution; in the latter case, the module extension can be manually
+set to ``.so``.
+
+On Mac OS: the build command is almost the same but it also requires passing
+the ``-undefined dynamic_lookup`` flag so as to ignore missing symbols when
+building the module:
+
+.. code-block:: bash
+
+    $ c++ -O3 -Wall -shared -std=c++11 -undefined dynamic_lookup `python3 -m pybind11 --includes` example.cpp -o example`python3-config --extension-suffix`
+
+In general, it is advisable to include several additional build parameters
+that can considerably reduce the size of the created binary. Refer to section
+:ref:`cmake` for a detailed example of a suitable cross-platform CMake-based
+build system that works on all platforms including Windows.
+
+.. note::
+
+    On Linux and macOS, it's better to (intentionally) not link against
+    ``libpython``. The symbols will be resolved when the extension library
+    is loaded into a Python binary. This is preferable because you might
+    have several different installations of a given Python version (e.g. the
+    system-provided Python, and one that ships with a piece of commercial
+    software). In this way, the plugin will work with both versions, instead
+    of possibly importing a second Python library into a process that already
+    contains one (which will lead to a segfault).
+
+Generating binding code automatically
+=====================================
+
+The ``Binder`` project is a tool for automatic generation of pybind11 binding
+code by introspecting existing C++ codebases using LLVM/Clang. See the
+[binder]_ documentation for details.
+
+.. [binder] http://cppbinder.readthedocs.io/en/latest/about.html

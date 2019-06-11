@@ -14,6 +14,7 @@ import textwrap
 from clang import cindex
 from clang.cindex import CursorKind
 from collections import OrderedDict
+from glob import glob
 from threading import Thread, Semaphore
 from multiprocessing import cpu_count
 
@@ -40,6 +41,10 @@ PRINT_LIST = [
     CursorKind.FIELD_DECL
 ]
 
+PREFIX_BLACKLIST = [
+    CursorKind.TRANSLATION_UNIT
+]
+
 CPP_OPERATORS = {
     '<=': 'le', '>=': 'ge', '==': 'eq', '!=': 'ne', '[]': 'array',
     '+=': 'iadd', '-=': 'isub', '*=': 'imul', '/=': 'idiv', '%=':
@@ -56,26 +61,22 @@ CPP_OPERATORS = OrderedDict(
 job_count = cpu_count()
 job_semaphore = Semaphore(job_count)
 
-registered_names = dict()
+
+class NoFilenamesError(ValueError):
+    pass
 
 
 def d(s):
-    return s.decode('utf8')
+    return s if isinstance(s, str) else s.decode('utf8')
 
 
 def sanitize_name(name):
-    global registered_names
     name = re.sub(r'type-parameter-0-([0-9]+)', r'T\1', name)
     for k, v in CPP_OPERATORS.items():
         name = name.replace('operator%s' % k, 'operator_%s' % v)
     name = re.sub('<.*>', '', name)
     name = ''.join([ch if ch.isalnum() else '_' for ch in name])
     name = re.sub('_$', '', re.sub('_+', '_', name))
-    if name in registered_names:
-        registered_names[name] += 1
-        name += '_' + str(registered_names[name])
-    else:
-        registered_names[name] = 1
     return '__doc_' + name
 
 
@@ -190,20 +191,17 @@ def process_comment(comment):
 
 
 def extract(filename, node, prefix, output):
-    num_extracted = 0
     if not (node.location.file is None or
             os.path.samefile(d(node.location.file.name), filename)):
         return 0
     if node.kind in RECURSE_LIST:
         sub_prefix = prefix
-        if node.kind != CursorKind.TRANSLATION_UNIT:
+        if node.kind not in PREFIX_BLACKLIST:
             if len(sub_prefix) > 0:
                 sub_prefix += '_'
             sub_prefix += d(node.spelling)
         for i in node.get_children():
-            num_extracted += extract(filename, i, sub_prefix, output)
-        if num_extracted == 0:
-            return 0
+            extract(filename, i, sub_prefix, output)
     if node.kind in PRINT_LIST:
         comment = d(node.raw_comment) if node.raw_comment is not None else ''
         comment = process_comment(comment)
@@ -212,10 +210,7 @@ def extract(filename, node, prefix, output):
             sub_prefix += '_'
         if len(node.spelling) > 0:
             name = sanitize_name(sub_prefix + d(node.spelling))
-            output.append('\nstatic const char *%s =%sR"doc(%s)doc";' %
-                (name, '\n' if '\n' in comment else ' ', comment))
-            num_extracted += 1
-    return num_extracted
+            output.append((name, filename, comment))
 
 
 class ExtractionThread(Thread):
@@ -236,9 +231,14 @@ class ExtractionThread(Thread):
         finally:
             job_semaphore.release()
 
-if __name__ == '__main__':
-    parameters = ['-x', 'c++', '-std=c++11']
+
+def read_args(args):
+    parameters = []
     filenames = []
+    if "-x" not in args:
+        parameters.extend(['-x', 'c++'])
+    if not any(it.startswith("-std=") for it in args):
+        parameters.append('-std=c++11')
 
     if platform.system() == 'Darwin':
         dev_path = '/Applications/Xcode.app/Contents/Developer/'
@@ -253,17 +253,48 @@ if __name__ == '__main__':
             sysroot_dir = os.path.join(sdk_dir, next(os.walk(sdk_dir))[1][0])
             parameters.append('-isysroot')
             parameters.append(sysroot_dir)
+    elif platform.system() == 'Linux':
+        # clang doesn't find its own base includes by default on Linux,
+        # but different distros install them in different paths.
+        # Try to autodetect, preferring the highest numbered version.
+        def clang_folder_version(d):
+            return [int(ver) for ver in re.findall(r'(?<!lib)(?<!\d)\d+', d)]
+        clang_include_dir = max((
+            path
+            for libdir in ['lib64', 'lib', 'lib32']
+            for path in glob('/usr/%s/clang/*/include' % libdir)
+            if os.path.isdir(path)
+        ), default=None, key=clang_folder_version)
+        if clang_include_dir:
+            parameters.extend(['-isystem', clang_include_dir])
 
-    for item in sys.argv[1:]:
+    for item in args:
         if item.startswith('-'):
             parameters.append(item)
         else:
             filenames.append(item)
 
     if len(filenames) == 0:
-        print('Syntax: %s [.. a list of header files ..]' % sys.argv[0])
-        exit(-1)
+        raise NoFilenamesError("args parameter did not contain any filenames")
 
+    return parameters, filenames
+
+
+def extract_all(args):
+    parameters, filenames = read_args(args)
+    output = []
+    for filename in filenames:
+        thr = ExtractionThread(filename, parameters, output)
+        thr.start()
+
+    print('Waiting for jobs to finish ..', file=sys.stderr)
+    for i in range(job_count):
+        job_semaphore.acquire()
+
+    return output
+
+
+def write_header(comments, out_file=sys.stdout):
     print('''/*
   This file contains docstrings for the Python bindings.
   Do not edit! These were automatically extracted by mkdoc.py
@@ -287,23 +318,62 @@ if __name__ == '__main__':
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wunused-variable"
 #endif
-''')
+''', file=out_file)
 
-    output = []
-    for filename in filenames:
-        thr = ExtractionThread(filename, parameters, output)
-        thr.start()
 
-    print('Waiting for jobs to finish ..', file=sys.stderr)
-    for i in range(job_count):
-        job_semaphore.acquire()
-
-    output.sort()
-    for l in output:
-        print(l)
+    name_ctr = 1
+    name_prev = None
+    for name, _, comment in list(sorted(comments, key=lambda x: (x[0], x[1]))):
+        if name == name_prev:
+            name_ctr += 1
+            name = name + "_%i" % name_ctr
+        else:
+            name_prev = name
+            name_ctr = 1
+        print('\nstatic const char *%s =%sR"doc(%s)doc";' %
+              (name, '\n' if '\n' in comment else ' ', comment), file=out_file)
 
     print('''
 #if defined(__GNUG__)
 #pragma GCC diagnostic pop
 #endif
-''')
+''', file=out_file)
+
+
+def mkdoc(args):
+    args = list(args)
+    out_path = None
+    for idx, arg in enumerate(args):
+        if arg.startswith("-o"):
+            args.remove(arg)
+            try:
+                out_path = arg[2:] or args.pop(idx)
+            except IndexError:
+                print("-o flag requires an argument")
+                exit(-1)
+            break
+
+    comments = extract_all(args)
+
+    if out_path:
+        try:
+            with open(out_path, 'w') as out_file:
+                write_header(comments, out_file)
+        except:
+            # In the event of an error, don't leave a partially-written
+            # output file.
+            try:
+                os.unlink(out_path)
+            except:
+                pass
+            raise
+    else:
+        write_header(comments)
+
+
+if __name__ == '__main__':
+    try:
+        mkdoc(sys.argv[1:])
+    except NoFilenamesError:
+        print('Syntax: %s [.. a list of header files ..]' % sys.argv[0])
+        exit(-1)
